@@ -15,6 +15,19 @@ Application web d'aide à la décision pour l'investissement locatif en France :
   - alertes DPE (calendrier d'interdiction de louer, gel des loyers).
 - Barèmes et hypothèses par défaut centralisés dans `src/engine/config.ts`.
 
+## Étape 2
+
+- Interface sur une page : score sur 100 avec sa fiabilité, raisons principales, chiffres clés, synthèse, graphiques, détails techniques et lexique.
+- Lecture d'annonce : par lien (serveur local, sans contournement des protections des sites), par collage du texte, ou par un bouton de favoris qui transmet la page ouverte dans le navigateur. Les données absentes sont estimées et signalées.
+- Données publiques (Licence Ouverte 2.0), préparées par les scripts de `scripts/` dans `public/donnees` :
+  - prix médians au m² par commune (DVF) et ventes réelles proches (DVF géolocalisé, à la demande) ;
+  - loyers de marché par commune (« Carte des loyers » 2025) ;
+  - indices Notaires-INSEE des prix des logements anciens (INSEE).
+- Prix de revente : hypothèses, réalisme et calcul détaillé ; TRI selon l'année de revente, au prix affiché et au prix à proposer.
+- Travaux avant de louer (montant, durée, DPE visé), historique et comparaison des annonces dans le navigateur.
+
+La lecture par lien, l'enregistrement des pages reçues (`sources/`) et les ventes proches (`cache-dvf/`) passent par le serveur de développement (`npm run dev`).
+
 ## Lancer
 
 ```bash

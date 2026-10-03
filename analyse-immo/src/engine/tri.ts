@@ -4,7 +4,7 @@ export function van(taux: number, flux: number[]): number {
 
 // Taux de rendement interne par dichotomie.
 // Renvoie null quand aucun flux n'est négatif (aucune mise de fonds : TRI infini)
-// et -1 quand aucun flux n'est positif (perte totale).
+// et -1 quand aucun flux n'est positif (que des pertes : TRI non calculable, ce n'est pas forcément une perte totale).
 export function tri(flux: number[]): number | null {
   const aNegatif = flux.some((f) => f < 0)
   const aPositif = flux.some((f) => f > 0)

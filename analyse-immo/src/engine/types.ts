@@ -13,11 +13,17 @@ export interface Bien {
   neuf: boolean
   fraisAgence: number // € en sus du prix, 0 si le prix est frais d'agence inclus
   travaux: number
+  moisTravaux?: number // mois sans loyer la première année, le temps des travaux
   chargesCopro: number // € / an
   partChargesRecuperables: number // 0..1
   taxeFonciere: number // € / an
   dpe: ClasseDpe | null
+  dpeApresTravaux?: ClasseDpe | null // classe visée après une rénovation énergétique
   ville?: string
+  adresse?: string
+  codeInsee?: string // commune ou arrondissement, pour les prix de marché
+  latitude?: number
+  longitude?: number
 }
 
 export interface Profil {
