@@ -2,7 +2,29 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useEffect, useRef, useState } from 'react'
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { analyserIndice, analyserMarche, clesIndice, estimerLoyer, mediane, realismeRevente, referenceMarche, type Bien, type Comparable, type Hypotheses, type Indice, type LoyerMarche, type LoyersCommune, type Marche, type Resultat, type SerieCommune } from '../engine'
+import {
+  analyserIndice,
+  analyserMarche,
+  clesIndice,
+  communeFiscale,
+  estimerLoyer,
+  estimerTaxeFonciere,
+  loyerEncadre,
+  mediane,
+  realismeRevente,
+  referenceMarche,
+  type Bien,
+  type Comparable,
+  type Hypotheses,
+  type Indice,
+  type LigneEncadrement,
+  type LoyerMarche,
+  type LoyersCommune,
+  type Marche,
+  type Resultat,
+  type SerieCommune,
+  type TaxeFonciereEstimee,
+} from '../engine'
 import { euros, pourcent } from './format'
 
 // ---------- Chargement des données de marché ----------
@@ -12,6 +34,7 @@ export interface DonneesMarche {
   comparables: Comparable[]
   indice: Indice | null // tendance longue Notaires-INSEE de la zone
   loyer: LoyerMarche | null // loyer de marché pour ce type de bien
+  taxeFonciere?: TaxeFonciereEstimee | null // estimation d'après le taux voté par la commune
   cle?: string // bien pour lequel ces données ont été calculées (voir cleMarche)
   etat: 'absent' | 'chargement' | 'pret'
 }
@@ -50,12 +73,25 @@ export function useMarche(bien: Bien): DonneesMarche {
         return cle ? analyserIndice(cle.split('|')[0], series[cle].a) : null
       })
       .catch(() => null)
-    const loyer = fetch(`/donnees/loyers/${departement(codeInsee)}.json`)
+    const carteLoyers = fetch(`/donnees/loyers/${departement(codeInsee)}.json`)
       .then((r) => (r.ok ? r.json() : {}))
       .then((communes: Record<string, LoyersCommune>) => (communes[codeInsee] ? estimerLoyer(communes[codeInsee], type, pieces, surface) : null))
       .catch(() => null)
-    void Promise.all([serie, ventes, indice, loyer]).then(([marche, comparables, indice, loyer]) => {
-      if (actif) setDonnees({ marche, comparables, indice, loyer, etat: 'pret', cle })
+    // À Paris, l'encadrement des loyers donne un repère par quartier, plus précis que la carte des loyers.
+    const encadrement =
+      codeInsee.startsWith('751') && latitude !== undefined && longitude !== undefined
+        ? fetch(`/api/encadrement?lat=${latitude}&lon=${longitude}&pieces=${pieces}`)
+            .then((r) => r.json())
+            .then((r) => (r.ok ? loyerEncadre(r.lignes as LigneEncadrement[], surface) : null))
+            .catch(() => null)
+        : Promise.resolve(null)
+    const loyer = Promise.all([encadrement, carteLoyers]).then(([e, c]): LoyerMarche | null => (e ? { ...e, autres: c ? [c] : [] } : c))
+    const tauxFoncier = fetch(`/donnees/taxe-fonciere/${departement(codeInsee)}.json`)
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((communes: Record<string, [number, number | null]>) => communes[communeFiscale(codeInsee)]?.[0] ?? null)
+      .catch(() => null)
+    void Promise.all([serie, ventes, indice, loyer, tauxFoncier]).then(([marche, comparables, indice, loyer, tauxFoncier]) => {
+      if (actif) setDonnees({ marche, comparables, indice, loyer, taxeFonciere: loyer && tauxFoncier ? estimerTaxeFonciere(tauxFoncier, loyer.loyer) : null, etat: 'pret', cle })
     })
     return () => {
       actif = false

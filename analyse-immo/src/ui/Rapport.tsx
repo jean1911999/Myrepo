@@ -19,6 +19,7 @@ import { BlocFiabilite, DetailScore, Jauge } from './Score'
 import { Synthese, TableauFlux } from './Synthese'
 import { Ameliorations, Lexique, Negociation, RaisonsPrincipales, TriRevente, type Amelioration } from './Decision'
 import type { Entree, Resume } from './Historique'
+import { SourcesHypotheses } from './Sources'
 import { BlocRevente, VentesProches, type DonneesMarche } from './Marche'
 import { BudgetMensuel, CascadeRevente, CoutProjet, GrapheScenarios, GrapheSensibilite } from './Graphiques'
 import { LIBELLES_CHAMPS, type ChampAnnonce } from '../extraction/extraire'
@@ -47,7 +48,7 @@ function analyserBase({ bien, profil, hypotheses, objectif, donneesExemple, esti
   const s = o.meilleur.strategie
   const prixMaxCf = prixMaximum(bien, profil, hypotheses, s, { type: 'cashflow', valeur: 0 })
   const prixMaxTri = prixMaximum(bien, profil, hypotheses, s, { type: 'tri', valeur: TRI_CIBLE_DEFAUT })
-  const sc = scenarios(bien, profil, hypotheses, s)
+  const sc = scenarios(bien, profil, hypotheses, s, donneesMarche.loyer)
   const pessimiste = sc[0].resultat
   const score = calculerScore(o.meilleur, pessimiste, prixMaxTri, bien, ecart)
   const fiabilite = calculerFiabilite({
@@ -72,10 +73,14 @@ function analyserBase({ bien, profil, hypotheses, objectif, donneesExemple, esti
     score,
     fiabilite,
     reference,
-    alertes: [...new Set([...alertesDpe(bien), ...o.meilleur.alertes])],
+    alertes: [...new Set([...alertesDpe(bien), ...o.meilleur.alertes, ...alerteEncadrement(hypotheses.loyerNuMensuel, donneesMarche.loyer?.plafond)])],
   }
 }
 
+
+// Encadrement des loyers : au-delà du loyer de référence majoré, le loyer est illégal (hors complément de loyer).
+const alerteEncadrement = (loyer: number, plafond?: number) =>
+  plafond !== undefined && loyer > plafond ? [`Loyer de ${euros(loyer)} par mois au-dessus du plafond de l'encadrement des loyers (${euros(plafond)} pour l'époque de construction la plus contraignante) : vérifiez l'époque de l'immeuble, un loyer supérieur au plafond est illégal.`] : []
 
 // Variantes rejouées pour montrer ce qui ferait monter le score.
 function analyser(p: Entrees) {
@@ -208,6 +213,8 @@ export function Rapport(props: Props) {
         <p className="aide">Ce score mesure la rentabilité calculée. {a.reference ? `Le critère « Prix demandé » tient compte des prix réels du marché (${a.reference.source}).` : 'Les prix du marché local ne sont pas pris en compte (bien non localisé ou commune sans données).'} Il ne juge pas encore le quartier (transports, commerces, risques) ni le potentiel d'amélioration du DPE.</p>
       </article>
 
+      <SourcesHypotheses bien={props.bien} hypotheses={props.hypotheses} m={m} donnees={props.donneesMarche} />
+
       <Ameliorations actuel={a.score.total} liste={a.ameliorations} />
 
       <Negociation bien={props.bien} hypotheses={props.hypotheses} m={m} prixPropose={prixPropose} alertesDpe={alertesDpe(props.bien)} />
@@ -303,7 +310,10 @@ export function Rapport(props: Props) {
             </tbody>
           </table>
         </div>
-        <p className="aide">Pessimiste : loyer −10 %, un mois de vacance en plus, bien sans valorisation, taux +0,75 point. Optimiste : loyer +5 %, valorisation +1 point.</p>
+        <p className="aide">
+          Pessimiste : loyer vide de {euros(a.sc[0].loyerNu)} par mois, un mois de vacance en plus, bien sans valorisation, taux +0,75 point. Optimiste : loyer vide de {euros(a.sc[2].loyerNu)} par mois, valorisation +1 point.{' '}
+          {props.donneesMarche.loyer ? 'Les loyers des scénarios sont tirés de la fourchette des loyers du marché local.' : 'Sans loyers de marché, les écarts de loyer sont fixes (−10 % et +5 %).'}
+        </p>
       </article>
 
       <article className="bloc">

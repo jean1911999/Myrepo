@@ -315,3 +315,9 @@ tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--texte) 3%, tr
 .travaux { display: grid; gap: 6px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--serie-2); background: color-mix(in srgb, var(--serie-2) 7%, var(--surface)); }
 .travaux-titre { font-weight: 600; }
 .travaux .grille-champs { padding-bottom: 0; }
+
+.table-sources td { white-space: normal; vertical-align: top; min-width: 130px; }
+.etiquette-source { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 0 8px; margin-right: 4px; border: 1px solid currentColor; }
+.etiquette-bon { color: var(--bon); }
+.etiquette-moyen { color: var(--moyen); }
+.etiquette-neutre { color: var(--texte-doux); }

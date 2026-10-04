@@ -176,10 +176,34 @@ const ventesProches: Connect.NextHandleFunction = async (req, res, next) => {
   }
 }
 
+// Encadrement des loyers de Paris : loyers de référence par quartier, nombre de pièces et époque
+// (opendata.paris.fr, Licence ODbL), interrogés à la demande pour le point où se trouve le bien.
+const encadrementParis: Connect.NextHandleFunction = async (req, res, next) => {
+  if (!req.url?.startsWith('/api/encadrement')) return next()
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  try {
+    const q = new URL(req.url, 'http://localhost').searchParams
+    const lat = Number(q.get('lat'))
+    const lon = Number(q.get('lon'))
+    const pieces = Math.min(4, Math.max(1, Math.round(Number(q.get('pieces')))))
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return void res.end(JSON.stringify({ ok: false }))
+    const ou = `intersects(geo_shape, geom'POINT(${lon} ${lat})') and piece=${pieces}`
+    const r = await fetch(
+      `https://opendata.paris.fr/api/explore/v2.1/catalog/datasets/logement-encadrement-des-loyers/records?where=${encodeURIComponent(ou)}&order_by=annee%20desc&limit=40&select=annee,nom_quartier,piece,epoque,meuble_txt,ref,max,min`,
+      { signal: AbortSignal.timeout(20_000) },
+    )
+    const lignes = r.ok ? ((await r.json()) as { results: { annee: string }[] }).results : []
+    // Dernier millésime seulement.
+    res.end(JSON.stringify({ ok: lignes.length > 0, lignes: lignes.filter((l) => l.annee === lignes[0].annee) }))
+  } catch {
+    res.end(JSON.stringify({ ok: false }))
+  }
+}
+
 const pluginAnnonce: Plugin = {
   name: 'lecture-annonce',
-  configureServer: (serveur) => void serveur.middlewares.use(lectureAnnonce).use(sourcesAnnonces).use(ventesProches),
-  configurePreviewServer: (serveur) => void serveur.middlewares.use(lectureAnnonce).use(sourcesAnnonces).use(ventesProches),
+  configureServer: (serveur) => void serveur.middlewares.use(lectureAnnonce).use(sourcesAnnonces).use(ventesProches).use(encadrementParis),
+  configurePreviewServer: (serveur) => void serveur.middlewares.use(lectureAnnonce).use(sourcesAnnonces).use(ventesProches).use(encadrementParis),
 }
 
 // https://vite.dev/config/

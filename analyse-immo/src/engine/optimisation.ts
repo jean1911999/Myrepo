@@ -87,9 +87,16 @@ export function optimiser(bien: Bien, profil: Profil, h: Hypotheses, objectif: O
 export interface Scenario {
   nom: 'Pessimiste' | 'Réaliste' | 'Optimiste'
   resultat: Resultat
+  loyerNu: number // loyer vide mensuel retenu dans ce scénario
 }
 
-export function scenarios(bien: Bien, profil: Profil, h: Hypotheses, s: Strategie): Scenario[] {
+// fourchetteLoyer : loyers de marché bas et haut (loyer nu mensuel). Quand elle est connue, les scénarios pessimiste
+// et optimiste visent le milieu entre le loyer retenu et chaque borne, au lieu d'un écart fixe.
+export function scenarios(bien: Bien, profil: Profil, h: Hypotheses, s: Strategie, fourchetteLoyer?: { bas: number; haut: number } | null): Scenario[] {
+  const borne = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+  const loyer = h.loyerNuMensuel
+  const dPessimiste = fourchetteLoyer && loyer > 0 ? borne((loyer + fourchetteLoyer.bas) / 2 / loyer, 0.75, 0.97) : 0.9
+  const dOptimiste = fourchetteLoyer && loyer > 0 ? borne((loyer + fourchetteLoyer.haut) / 2 / loyer, 1.02, 1.2) : 1.05
   const variante = (dLoyer: number, dVacance: number, valo: number, reval: number, dTaux: number): Resultat => {
     const loyersParMode = h.loyersParMode
       ? Object.fromEntries(Object.entries(h.loyersParMode).map(([k, v]) => [k, (v ?? 0) * dLoyer]))
@@ -105,9 +112,9 @@ export function scenarios(bien: Bien, profil: Profil, h: Hypotheses, s: Strategi
     return simuler(bien, profil, h2, { ...s, financement: { ...s.financement, taux: s.financement.taux + dTaux } })
   }
   return [
-    { nom: 'Pessimiste', resultat: variante(0.9, 1, 0, 0.005, 0.0075) },
-    { nom: 'Réaliste', resultat: simuler(bien, profil, h, s) },
-    { nom: 'Optimiste', resultat: variante(1.05, -0.25, h.valorisationBien + 0.01, h.revalorisationLoyers + 0.005, -0.0025) },
+    { nom: 'Pessimiste', resultat: variante(dPessimiste, 1, 0, 0.005, 0.0075), loyerNu: loyer * dPessimiste },
+    { nom: 'Réaliste', resultat: simuler(bien, profil, h, s), loyerNu: loyer },
+    { nom: 'Optimiste', resultat: variante(dOptimiste, -0.25, h.valorisationBien + 0.01, h.revalorisationLoyers + 0.005, -0.0025), loyerNu: loyer * dOptimiste },
   ]
 }
 

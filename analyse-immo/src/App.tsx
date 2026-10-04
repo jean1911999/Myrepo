@@ -60,7 +60,7 @@ export default function App() {
   const [messageLien, setMessageLien] = useState('')
   const [collage, setCollage] = useState(false)
   const [texteAnnonce, setTexteAnnonce] = useState('')
-  const [lecture, setLecture] = useState<{ lus: ChampAnnonce[]; estimes: ChampAnnonce[]; originePrix?: string; loyerDeMarche?: boolean } | null>(null)
+  const [lecture, setLecture] = useState<{ lus: ChampAnnonce[]; estimes: ChampAnnonce[]; originePrix?: string; loyerDeMarche?: boolean; taxeEstimee?: boolean } | null>(null)
   const [enCours, setEnCours] = useState(false)
   const [source, setSource] = useState('')
   const [fichierSource, setFichierSource] = useState('')
@@ -118,6 +118,14 @@ export default function App() {
     setHyp((x) => ({ ...x, loyerNuMensuel: loyerMarche.loyer }))
     setLecture((l) => (l ? { ...l, loyerDeMarche: true } : l))
   }, [loyerMarche, lecture])
+
+  // Même principe pour la taxe foncière absente de l'annonce : estimation d'après le taux voté par la commune.
+  const taxeMarche = donneesMarche.taxeFonciere ?? null
+  useEffect(() => {
+    if (!taxeMarche || !lecture?.estimes.includes('taxeFonciere') || lecture.taxeEstimee) return
+    setBien((x) => ({ ...x, taxeFonciere: taxeMarche.montant }))
+    setLecture((l) => (l ? { ...l, taxeEstimee: true } : l))
+  }, [taxeMarche, lecture])
 
   // Après une rénovation énergétique, l'analyse (alertes DPE, score) porte sur la classe visée.
   const bienAnalyse = useMemo(() => (bien.dpeApresTravaux ? { ...bien, dpe: bien.dpeApresTravaux } : bien), [bien])
@@ -339,7 +347,7 @@ export default function App() {
               {estimes.includes('loyer') && <em className="estime">{lecture?.loyerDeMarche ? 'estimé d’après les loyers du marché' : 'estimé par l’outil'}</em>}
               {loyerMarche && (
                 <em className={`estime ${hyp.loyerNuMensuel > loyerMarche.haut ? 'texte-mauvais' : 'estime-neutre'}`}>
-                  Marché : {euros(loyerMarche.loyer)} (de {euros(loyerMarche.bas)} à {euros(loyerMarche.haut)})
+                  Marché : {euros(loyerMarche.loyer)} (de {euros(loyerMarche.bas)} à {euros(loyerMarche.haut)}){loyerMarche.plafond !== undefined && `, plafond légal ${euros(loyerMarche.plafond)}`}
                 </em>
               )}
             </li>
@@ -348,6 +356,16 @@ export default function App() {
               {bien.dpe ?? 'Non renseigné'}
               {bien.dpeApresTravaux && ` → ${bien.dpeApresTravaux} après travaux`}
               {estimes.includes('dpe') && <em className="estime">absent de l'annonce</em>}
+            </li>
+            <li>
+              <span>Taxe foncière</span>
+              {euros(bien.taxeFonciere)} / an
+              {estimes.includes('taxeFonciere') && <em className="estime">{lecture?.taxeEstimee ? 'estimée d’après le taux voté par la commune' : 'estimée par l’outil'}</em>}
+              {taxeMarche && (
+                <em className="estime estime-neutre">
+                  Repère : {euros(taxeMarche.montant)} (de {euros(taxeMarche.bas)} à {euros(taxeMarche.haut)})
+                </em>
+              )}
             </li>
             <li>
               <span>Prix au m²</span>
