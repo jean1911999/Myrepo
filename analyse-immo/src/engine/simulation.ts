@@ -93,7 +93,8 @@ export function simuler(bien: Bien, profil: Profil, h: Hypotheses, s: Strategie)
   for (let a = 1; a <= H; a++) {
     const rL = Math.pow(1 + h.revalorisationLoyers, a - 1)
     const rC = Math.pow(1 + h.revalorisationCharges, a - 1)
-    const loyers = loyerM * moisLoues * rL
+    // Pendant les travaux de départ, le bien n'est pas loué : mois de loyer perdus la première année.
+    const loyers = loyerM * (a === 1 ? Math.max(0, moisLoues - (bien.moisTravaux ?? 0)) : moisLoues) * rL
     const charges =
       (bien.chargesCopro * (1 - bien.partChargesRecuperables) + bien.taxeFonciere + h.pno + mode.chargesSpecifiques) * rC +
       loyers * (h.entretien + gestionPct) +

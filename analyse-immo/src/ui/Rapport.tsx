@@ -1,21 +1,28 @@
 import { useMemo } from 'react'
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
-  LIBELLES_REGIMES,
-  MODES,
   TRI_CIBLE_DEFAUT,
   alertesDpe,
+  calculerFiabilite,
+  calculerScore,
   optimiser,
   prixMaximum,
+  referenceMarche,
   scenarios,
   sensibilites,
-  verdict,
   type Bien,
   type Hypotheses,
   type Objectif,
   type Profil,
-  type Resultat,
 } from '../engine'
+import { BlocFiabilite, DetailScore, Jauge } from './Score'
+import { Synthese, TableauFlux } from './Synthese'
+import { Ameliorations, Lexique, Negociation, RaisonsPrincipales, TriRevente, type Amelioration } from './Decision'
+import type { Entree, Resume } from './Historique'
+import { SourcesHypotheses } from './Sources'
+import { BlocRevente, VentesProches, type DonneesMarche } from './Marche'
+import { BudgetMensuel, CascadeRevente, CoutProjet, GrapheScenarios, GrapheSensibilite } from './Graphiques'
+import { LIBELLES_CHAMPS, type ChampAnnonce } from '../extraction/extraire'
 import { euros, pourcent, signe, triTexte } from './format'
 
 interface Props {
@@ -23,26 +30,85 @@ interface Props {
   profil: Profil
   hypotheses: Hypotheses
   objectif: Objectif
+  donneesExemple: boolean
+  estimes: ChampAnnonce[]
+  donneesMarche: DonneesMarche
+  onValorisation: (taux: number) => void
+  historique: Entree[]
+  onEnregistrer: (r: Resume) => void
 }
 
-function analyser({ bien, profil, hypotheses, objectif }: Props) {
+type Entrees = Pick<Props, 'bien' | 'profil' | 'hypotheses' | 'objectif' | 'donneesExemple' | 'estimes' | 'donneesMarche'>
+
+function analyserBase({ bien, profil, hypotheses, objectif, donneesExemple, estimes, donneesMarche }: Entrees) {
+  // Position du prix au m² par rapport au marché local (ventes comparables, sinon médiane de la commune).
+  const reference = bien.surface > 0 ? referenceMarche(bien.prix / bien.surface, donneesMarche.marche, donneesMarche.comparables) : null
+  const ecart = reference?.ecart ?? null
   const o = optimiser(bien, profil, hypotheses, objectif)
   const s = o.meilleur.strategie
   const prixMaxCf = prixMaximum(bien, profil, hypotheses, s, { type: 'cashflow', valeur: 0 })
   const prixMaxTri = prixMaximum(bien, profil, hypotheses, s, { type: 'tri', valeur: TRI_CIBLE_DEFAUT })
+  const sc = scenarios(bien, profil, hypotheses, s, donneesMarche.loyer)
+  const pessimiste = sc[0].resultat
+  const score = calculerScore(o.meilleur, pessimiste, prixMaxTri, bien, ecart)
+  const fiabilite = calculerFiabilite({
+    bien,
+    modeRetenu: s.mode,
+    loyerModeSaisi: (hypotheses.loyersParMode?.[s.mode] ?? 0) > 0,
+    donneesExemple,
+    loyerEstime: estimes.includes('loyer'),
+    champsEstimes: estimes.filter((c) => c !== 'loyer').map((c) => LIBELLES_CHAMPS[c]),
+    loyerMarche: donneesMarche.loyer,
+    loyerNu: hypotheses.loyerNuMensuel,
+    marche: reference === null ? null : reference.source === 'médiane de la commune' ? 'commune' : 'comparables',
+    scorePessimiste: calculerScore(pessimiste, pessimiste, prixMaxTri, bien, ecart).total,
+    scoreOptimiste: calculerScore(sc[2].resultat, pessimiste, prixMaxTri, bien, ecart).total,
+  })
   return {
     o,
-    sc: scenarios(bien, profil, hypotheses, s),
+    sc,
     sens: sensibilites(bien, profil, hypotheses, s),
     prixMaxCf,
     prixMaxTri,
-    verdict: verdict(o.meilleur, prixMaxTri, bien.prix),
-    alertes: [...new Set([...alertesDpe(bien), ...o.meilleur.alertes])],
+    score,
+    fiabilite,
+    reference,
+    alertes: [...new Set([...alertesDpe(bien), ...o.meilleur.alertes, ...alerteEncadrement(hypotheses.loyerNuMensuel, donneesMarche.loyer?.plafond)])],
   }
 }
 
-const libelleStrategie = (r: Resultat) => `${MODES[r.strategie.mode].libelle} · ${LIBELLES_REGIMES[r.strategie.regime]}`
-const libelleGestion = (r: Resultat) => (r.strategie.gestion === 'agence' ? 'Agence' : 'En direct')
+
+// Encadrement des loyers : au-delà du loyer de référence majoré, le loyer est illégal (hors complément de loyer).
+const alerteEncadrement = (loyer: number, plafond?: number) =>
+  plafond !== undefined && loyer > plafond ? [`Loyer de ${euros(loyer)} par mois au-dessus du plafond de l'encadrement des loyers (${euros(plafond)} pour l'époque de construction la plus contraignante) : vérifiez l'époque de l'immeuble, un loyer supérieur au plafond est illégal.`] : []
+
+// Variantes rejouées pour montrer ce qui ferait monter le score.
+function analyser(p: Entrees) {
+  const a = analyserBase(p)
+  const { bien, hypotheses } = p
+  const scoreDe = (b: Bien, h: Hypotheses) => {
+    try {
+      return analyserBase({ ...p, bien: b, hypotheses: h }).score.total
+    } catch {
+      return null
+    }
+  }
+  const ameliorations: Amelioration[] = []
+  const ajouter = (libelle: string, score: number | null, note?: string) => {
+    if (score !== null && score > a.score.total) ameliorations.push({ libelle, score, note })
+  }
+  if (a.prixMaxTri !== null && a.prixMaxTri < bien.prix) ajouter(`Acheter ${euros(a.prixMaxTri)} au lieu de ${euros(bien.prix)}`, scoreDe({ ...bien, prix: a.prixMaxTri }, hypotheses))
+  ajouter('Acheter 5 % moins cher', scoreDe({ ...bien, prix: bien.prix * 0.95 }, hypotheses))
+  const loyersPlus: Hypotheses = {
+    ...hypotheses,
+    loyerNuMensuel: hypotheses.loyerNuMensuel * 1.1,
+    loyersParMode: hypotheses.loyersParMode && Object.fromEntries(Object.entries(hypotheses.loyersParMode).map(([k, v]) => [k, (v ?? 0) * 1.1])),
+  }
+  ajouter('Louer 10 % plus cher', scoreDe(bien, loyersPlus))
+  if (bien.dpe === 'E' || bien.dpe === 'F' || bien.dpe === 'G') ajouter(`Passer le DPE de ${bien.dpe} à D par des travaux`, scoreDe({ ...bien, dpe: 'D' }, hypotheses), '(coût des travaux non compté)')
+  if (bien.travaux > 0) ajouter('Réduire les travaux de moitié', scoreDe({ ...bien, travaux: bien.travaux / 2 }, hypotheses))
+  return { ...a, ameliorations }
+}
 
 export function Rapport(props: Props) {
   const a = useMemo(() => {
@@ -51,7 +117,8 @@ export function Rapport(props: Props) {
     } catch (e) {
       return { erreur: e instanceof Error ? e.message : 'Analyse impossible' }
     }
-  }, [props])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.bien, props.profil, props.hypotheses, props.objectif, props.donneesExemple, props.estimes, props.donneesMarche])
 
   if ('erreur' in a) {
     return (
@@ -63,7 +130,12 @@ export function Rapport(props: Props) {
 
   const m = a.o.meilleur
   const f = m.strategie.financement
-  const classeVerdict = a.verdict === 'Bonne opportunité' ? 'bon' : a.verdict === 'À négocier' ? 'moyen' : 'mauvais'
+  const cf = m.cashflowMensuelApresImpot
+  const patrimoineFinal = m.annees[m.annees.length - 1].patrimoineNet
+  const prix = props.bien.prix
+  const rabais = a.prixMaxTri === null ? null : 1 - a.prixMaxTri / prix
+  const prixPropose = a.prixMaxTri === null ? null : Math.min(a.prixMaxTri, prix)
+  const mieuxQue = props.historique.filter((e) => e.score < a.score.total).length
   const donneesGraphe = m.annees.map((y) => ({
     annee: y.annee,
     'Patrimoine net': Math.round(y.patrimoineNet),
@@ -72,41 +144,61 @@ export function Rapport(props: Props) {
 
   return (
     <section className="rapport" aria-live="polite">
-      <div className={`verdict verdict-${classeVerdict}`}>
-        <div>
-          <p className="surtitre">Verdict provisoire</p>
-          <p className="verdict-texte">{a.verdict}</p>
+      <div className={`resultat resultat-${a.score.niveau}`}>
+        <Jauge score={a.score} />
+        <div className="resultat-texte">
+          <p className="surtitre">Notre avis sur cette annonce</p>
+          <p className="verdict-texte">{a.score.verdict}</p>
+          <RaisonsPrincipales score={a.score} m={m} pessimiste={a.sc[0].resultat} bien={props.bien} prixMaxTri={a.prixMaxTri} />
+          <BlocFiabilite fiabilite={a.fiabilite} />
+          {props.historique.length > 0 && (
+            <p className="aide">
+              Mieux notée que {mieuxQue} des {props.historique.length} annonces enregistrées (<a href="#comparaison">voir la comparaison</a>).
+            </p>
+          )}
+          <div className="actions sans-impression">
+            <button type="button" onClick={() => props.onEnregistrer({ score: a.score.total, fiabilite: a.fiabilite.pourcentage, tri: m.tri, cashflow: m.cashflowMensuelApresImpot, prixPropose })}>
+              Enregistrer cette analyse
+            </button>
+            <button type="button" className="bouton-secondaire" onClick={() => window.print()}>
+              Imprimer ou enregistrer en PDF
+            </button>
+          </div>
         </div>
-        <p className="verdict-note">Le score multicritère sur 100 (emplacement, marché, risques) complétera ce verdict à l'étape 3.</p>
       </div>
 
       <div className="indicateurs">
-        <Indicateur libelle="TRI" valeur={triTexte(m.tri)} detail={`sur ${props.hypotheses.horizon} ans, revente incluse`} />
-        <Indicateur libelle="Cash-flow après impôt" valeur={`${signe(m.cashflowMensuelApresImpot)}/mois`} detail="moyenne sur la durée" ton={m.cashflowMensuelApresImpot >= 0 ? 'bon' : 'mauvais'} />
-        <Indicateur libelle="Rentabilité nette-nette" valeur={pourcent(m.rentaNetteNette)} detail={`brute ${pourcent(m.rentaBrute)} · nette ${pourcent(m.rentaNette)}`} />
-        <Indicateur libelle="Effort d'épargne" valeur={`${euros(m.effortEpargneMensuel)}/mois`} detail="moyenne sur la durée" />
+        <Indicateur
+          libelle="Chaque mois"
+          valeur={`${signe(cf)}`}
+          detail={cf >= 0 ? 'Ce qu’il vous reste une fois le crédit, les charges et les impôts payés.' : 'Ce que vous devez remettre de votre poche, une fois le loyer encaissé.'}
+          ton={cf >= 0 ? 'bon' : 'mauvais'}
+        />
+        <Indicateur libelle="Rendement par an (TRI investisseur)" valeur={triTexte(m.tri)} detail={`Après impôts, sur l'argent sorti de votre poche, avec revente au bout de ${props.hypotheses.horizon} ans. Comme un placement qui rapporterait ce taux chaque année.`} />
+        <Indicateur
+          libelle="Prix à proposer"
+          valeur={a.prixMaxTri === null ? 'Aucun' : euros(Math.min(a.prixMaxTri, prix))}
+          detail={
+            rabais === null
+              ? 'Avec ce loyer, aucun prix raisonnable ne rend l’opération rentable.'
+              : rabais > 0.005
+                ? `Soit ${pourcent(rabais)} de moins que le prix affiché, pour que l’opération soit vraiment rentable.`
+                : 'Le prix affiché est déjà cohérent avec le loyer.'
+          }
+        />
+        <Indicateur libelle={`Dans ${props.hypotheses.horizon} ans`} valeur={euros(patrimoineFinal)} detail="Ce que vous posséderiez si vous revendiez : valeur du bien moins le crédit restant." />
       </div>
 
-      <article className="bloc">
-        <h2>Stratégie recommandée</h2>
-        <dl className="definitions">
-          <Def terme="Mode de location" valeur={MODES[m.strategie.mode].libelle} />
-          <Def terme="Régime fiscal" valeur={LIBELLES_REGIMES[m.strategie.regime]} />
-          <Def terme="Gestion" valeur={libelleGestion(m)} />
-          <Def terme="Apport conseillé" valeur={euros(f.apport)} />
-          <Def terme="Prêt" valeur={`${euros(m.montantEmprunte)} sur ${f.duree} ans à ${pourcent(f.taux)}`} />
-          <Def terme="Mensualité" valeur={`${euros(m.mensualiteCredit + m.mensualiteAssurance)} assurance comprise`} />
-          <Def terme="Coût total du projet" valeur={euros(m.coutTotal)} />
-          <Def terme="Taux d'endettement" valeur={m.tauxEndettement === null ? 'Revenus non renseignés' : pourcent(m.tauxEndettement)} />
-          {m.ameublement > 0 && <Def terme="Ameublement estimé" valeur={euros(m.ameublement)} />}
-          <Def terme="Plus-value nette à la revente" valeur={euros(m.plusValueNette)} />
-        </dl>
-        {a.o.aucuneFinancable && <p className="alerte">Aucune combinaison ne respecte la limite d'endettement de 35 %.</p>}
-      </article>
+      <div className="duo-blocs">
+        <BudgetMensuel m={m} />
+        <CoutProjet bien={props.bien} m={m} />
+      </div>
+
+      <Synthese bien={props.bien} hypotheses={props.hypotheses} o={a.o} sc={a.sc} prixMaxTri={a.prixMaxTri} />
 
       {a.alertes.length > 0 && (
-        <article className="bloc">
-          <h2>Points de vigilance</h2>
+        <article className="bloc bloc-vigilance">
+          <h2>À vérifier avant d'acheter</h2>
           <ul className="alertes">
             {a.alertes.map((t) => (
               <li key={t}>{t}</li>
@@ -116,46 +208,46 @@ export function Rapport(props: Props) {
       )}
 
       <article className="bloc">
-        <h2>Prix à viser pour négocier</h2>
-        <dl className="definitions">
-          <Def terme="Prix maximum pour un cash-flow nul" valeur={a.prixMaxCf === null ? 'Inatteignable avec ce loyer' : euros(a.prixMaxCf)} />
-          <Def terme={`Prix maximum pour un TRI de ${pourcent(TRI_CIBLE_DEFAUT)}`} valeur={a.prixMaxTri === null ? 'Inatteignable avec ce loyer' : euros(a.prixMaxTri)} />
-          <Def terme="Prix affiché" valeur={euros(props.bien.prix)} />
-        </dl>
+        <h2>D'où vient le score</h2>
+        <DetailScore score={a.score} />
+        <p className="aide">Ce score mesure la rentabilité calculée. {a.reference ? `Le critère « Prix demandé » tient compte des prix réels du marché (${a.reference.source}).` : 'Les prix du marché local ne sont pas pris en compte (bien non localisé ou commune sans données).'} Il ne juge pas encore le quartier (transports, commerces, risques) ni le potentiel d'amélioration du DPE.</p>
       </article>
 
-      <article className="bloc">
-        <h2>Comparatif des modes de location et des régimes</h2>
-        <p className="aide">Chaque ligne montre le meilleur financement et la meilleure gestion pour ce couple.</p>
-        <div className="tableau-defilant">
-          <table>
-            <thead>
-              <tr>
-                <th>Stratégie</th>
-                <th>Gestion</th>
-                <th>Apport</th>
-                <th>Durée</th>
-                <th className="num">Cash-flow</th>
-                <th className="num">Renta. nette-nette</th>
-                <th className="num">TRI</th>
-              </tr>
-            </thead>
-            <tbody>
-              {a.o.parModeRegime.map((r, i) => (
-                <tr key={libelleStrategie(r)} className={i === 0 ? 'ligne-retenue' : undefined}>
-                  <td>{libelleStrategie(r)}</td>
-                  <td>{libelleGestion(r)}</td>
-                  <td>{euros(r.strategie.financement.apport)}</td>
-                  <td>{r.strategie.financement.duree} ans</td>
-                  <td className="num">{signe(r.cashflowMensuelApresImpot)}</td>
-                  <td className="num">{pourcent(r.rentaNetteNette)}</td>
-                  <td className="num">{triTexte(r.tri)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </article>
+      <SourcesHypotheses bien={props.bien} hypotheses={props.hypotheses} m={m} donnees={props.donneesMarche} />
+
+      <Ameliorations actuel={a.score.total} liste={a.ameliorations} />
+
+      <Negociation bien={props.bien} hypotheses={props.hypotheses} m={m} prixPropose={prixPropose} alertesDpe={alertesDpe(props.bien)} />
+
+      <TriRevente bien={props.bien} profil={props.profil} hypotheses={props.hypotheses} strategie={m.strategie} prixPropose={prixPropose} />
+
+      <TableauFlux m={m} hypotheses={props.hypotheses} />
+
+      <VentesProches bien={props.bien} donnees={props.donneesMarche} />
+
+      <BlocRevente bien={props.bien} hypotheses={props.hypotheses} m={m} donnees={props.donneesMarche} onValorisation={props.onValorisation} />
+
+      <CascadeRevente m={m} hypotheses={props.hypotheses} />
+
+      <section className="detail-expert">
+        <h2 className="titre-section">Détails techniques</h2>
+        <p className="aide">Les termes techniques sont définis dans le <a href="#lexique">lexique</a> en bas de page.</p>
+        <div className="detail-expert-contenu">
+          <article className="bloc">
+            <h2>Stratégie recommandée en chiffres</h2>
+            <dl className="definitions">
+              <Def terme="Coût total du projet" valeur={euros(m.coutTotal)} />
+              <Def terme="Prêt" valeur={`${euros(m.montantEmprunte)} sur ${f.duree} ans à ${pourcent(f.taux)}`} />
+              <Def terme="Taux d'endettement" valeur={m.tauxEndettement === null ? 'Revenus non renseignés' : pourcent(m.tauxEndettement)} />
+              <Def terme="Rentabilité nette-nette" valeur={pourcent(m.rentaNetteNette)} />
+              <Def terme="Rentabilité brute / nette" valeur={`${pourcent(m.rentaBrute)} / ${pourcent(m.rentaNette)}`} />
+              <Def terme="Effort d'épargne moyen" valeur={`${euros(m.effortEpargneMensuel)}/mois`} />
+              {m.ameublement > 0 && <Def terme="Ameublement estimé" valeur={euros(m.ameublement)} />}
+              <Def terme="Plus-value nette à la revente" valeur={euros(m.plusValueNette)} />
+              <Def terme="Prix maximum pour un cash-flow nul" valeur={a.prixMaxCf === null ? 'Inatteignable avec ce loyer' : euros(a.prixMaxCf)} />
+              <Def terme={`Prix maximum pour un TRI de ${pourcent(TRI_CIBLE_DEFAUT)}`} valeur={a.prixMaxTri === null ? 'Inatteignable avec ce loyer' : euros(a.prixMaxTri)} />
+            </dl>
+          </article>
 
       <article className="bloc">
         <h2>Financement : apport et durée</h2>
@@ -193,6 +285,7 @@ export function Rapport(props: Props) {
 
       <article className="bloc">
         <h2>Scénarios</h2>
+        <GrapheScenarios sc={a.sc} />
         <div className="tableau-defilant">
           <table>
             <thead>
@@ -217,7 +310,10 @@ export function Rapport(props: Props) {
             </tbody>
           </table>
         </div>
-        <p className="aide">Pessimiste : loyer −10 %, un mois de vacance en plus, bien sans valorisation, taux +0,75 point. Optimiste : loyer +5 %, valorisation +1 point.</p>
+        <p className="aide">
+          Pessimiste : loyer vide de {euros(a.sc[0].loyerNu)} par mois, un mois de vacance en plus, bien sans valorisation, taux +0,75 point. Optimiste : loyer vide de {euros(a.sc[2].loyerNu)} par mois, valorisation +1 point.{' '}
+          {props.donneesMarche.loyer ? 'Les loyers des scénarios sont tirés de la fourchette des loyers du marché local.' : 'Sans loyers de marché, les écarts de loyer sont fixes (−10 % et +5 %).'}
+        </p>
       </article>
 
       <article className="bloc">
@@ -230,8 +326,8 @@ export function Rapport(props: Props) {
               <YAxis stroke="var(--texte-doux)" tickFormatter={(v) => `${Math.round(v / 1000)} k€`} width={64} />
               <Tooltip formatter={(v) => euros(Number(v))} labelFormatter={(l) => `Année ${l}`} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--ligne)' }} />
               <Legend />
-              <Line type="monotone" dataKey="Patrimoine net" stroke="var(--accent)" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Cash-flow cumulé" stroke="var(--secondaire)" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="Patrimoine net" stroke="var(--serie-1)" strokeWidth={2.5} dot={false} />
+              <Line type="monotone" dataKey="Cash-flow cumulé" stroke="var(--serie-2)" strokeWidth={2.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -239,6 +335,7 @@ export function Rapport(props: Props) {
 
       <article className="bloc">
         <h2>Sensibilité</h2>
+        <GrapheSensibilite sens={a.sens} />
         <div className="tableau-defilant">
           <table>
             <thead>
@@ -261,7 +358,7 @@ export function Rapport(props: Props) {
         </div>
       </article>
 
-      <details className="bloc">
+      <details className="bloc" open>
         <summary>
           <h2>Projection année par année</h2>
         </summary>
@@ -296,6 +393,10 @@ export function Rapport(props: Props) {
           </table>
         </div>
       </details>
+        </div>
+      </section>
+
+      <Lexique />
 
       <p className="pied">{a.o.toutes} combinaisons comparées (modes de location, régimes fiscaux, gestion, apport et durée de prêt). Barèmes fiscaux des revenus 2025, à vérifier avec un professionnel avant toute décision.</p>
     </section>

@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Pages d'annonces capturées par le bouton de favoris
+sources
+cache-dvf
